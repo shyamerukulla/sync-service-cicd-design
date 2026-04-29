@@ -1,0 +1,93 @@
+---
+# ansible/deploy.yml
+# Blue/Green deployment for sync-service on GCP VMs
+# Variables passed in from Jenkinsfile:
+#   image     - full GAR image URI with tag
+#   app_env   - qa | staging | prod
+#   mongo_uri - MongoDB connection string (from Secret Manager)
+#   app_name  - sync-service
+
+- name: "Deploy {{ app_name }} — Blue/Green"
+  hosts: app_servers
+  become: true
+  vars:
+    app_port: 8080
+    container_name_blue: "{{ app_name }}-blue"
+    container_name_green: "{{ app_name }}-green"
+    nginx_config: "/etc/nginx/conf.d/{{ app_name }}.conf"
+
+  tasks:
+
+    - name: Determine which slot is currently live
+      shell: |
+        if docker ps --format '{{.Names}}' | grep -q "{{ container_name_blue }}"; then
+          echo "blue"
+        else
+          echo "green"
+        fi
+      register: live_slot
+      changed_when: false
+
+    - name: Set idle slot
+      set_fact:
+        live: "{{ live_slot.stdout }}"
+        idle: "{{ 'green' if live_slot.stdout == 'blue' else 'blue' }}"
+        idle_port: "{{ '8081' if live_slot.stdout == 'blue' else '8082' }}"
+
+    - name: Pull new image
+      community.docker.docker_image:
+        name: "{{ image }}"
+        source: pull
+        force_source: true
+
+    - name: Start new container on idle slot
+      community.docker.docker_container:
+        name: "{{ app_name }}-{{ idle }}"
+        image: "{{ image }}"
+        state: started
+        restart_policy: unless-stopped
+        ports:
+          - "{{ idle_port }}:8080"
+        env:
+          SPRING_PROFILES_ACTIVE: "{{ app_env }}"
+          SPRING_DATA_MONGODB_URI: "{{ mongo_uri }}"
+          APP_ENV: "{{ app_env }}"
+        healthcheck:
+          test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+          interval: 10s
+          timeout: 5s
+          retries: 6
+          start_period: 30s
+
+    - name: Wait for idle slot to be healthy
+      uri:
+        url: "http://localhost:{{ idle_port }}/actuator/health"
+        status_code: 200
+      register: health
+      until: health.status == 200
+      retries: 18
+      delay: 10
+
+    - name: Switch nginx to idle slot (traffic cutover)
+      template:
+        src: templates/nginx_upstream.conf.j2
+        dest: "{{ nginx_config }}"
+      vars:
+        active_port: "{{ idle_port }}"
+      notify: Reload nginx
+
+    - name: Flush handlers (apply nginx reload immediately)
+      meta: flush_handlers
+
+    - name: Stop old live container
+      community.docker.docker_container:
+        name: "{{ app_name }}-{{ live }}"
+        state: stopped
+      # Keep container around briefly for instant rollback (15 min TTL handled externally)
+
+  handlers:
+    - name: Reload nginx
+      service:
+        name: nginx
+        state: reloaded
+
