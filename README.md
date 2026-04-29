@@ -51,3 +51,16 @@ See [`docs/CICD_DESIGN.md`](docs/CICD_DESIGN.md) for the full design covering:
 - Configuration & secrets management
 - Blue/Green deployment rationale
 
+## Part 2 — Infrastructure Design
+
+See [part2-infrastructure/INFRASTRUCTURE_DESIGN.md](part2-infrastructure/INFRASTRUCTURE_DESIGN.md) for the full design covering:
+
+- Compute choice (Cloud Run over GKE/GCE)
+- MongoDB Atlas hosting approach
+- VPC networking and private DB access
+- Secrets & IAM setup
+- Logging & monitoring stack
+
+### Architecture Diagram
+
+![Architecture Diagram](part2-infrastructure/architecture-diagram.png)
